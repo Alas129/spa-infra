@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  frontend:
+    image: ${ECR_REGISTRY}/spa-frontend:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  backend:
+    image: ${ECR_REGISTRY}/spa-backend:latest
+    environment:
+      DB_HOST: ${RDS_ENDPOINT}
+      DB_PORT: "3306"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: spa_db
+      NODE_ENV: production
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge

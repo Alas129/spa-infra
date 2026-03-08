@@ -1,0 +1,187 @@
+name: Nightly QA Deploy
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 3:00 AM UTC every night
+  workflow_dispatch:        # Allow manual trigger
+
+permissions:
+  id-token: write          # Required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "123456789012"       # Replace with your account ID
+  ECR_FRONTEND: spa-frontend
+  ECR_BACKEND: spa-backend
+  QA_EC2_HOST: qa.yourdomain.com
+  TEMP_EC2_AMI: ami-0abcdef1234567890  # Amazon Linux 2023 AMI
+  TEMP_EC2_TYPE: t3.micro
+  TEMP_EC2_SG: sg-xxxxxxxxxxxxxxxxx
+  TEMP_EC2_SUBNET: subnet-xxxxxxxxxxxxxxxxx
+  TEMP_EC2_KEY: qa-deploy-key
+  TEMP_EC2_PROFILE: ec2-qa-role
+
+jobs:
+  nightly-deploy:
+    runs-on: ubuntu-latest
+    steps:
+
+      # ── Checkout ──────────────────────────────────────────────
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: YOUR_ORG/spa-app
+          path: spa-app
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+
+      # ── AWS Authentication (OIDC) ────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Step 1: Launch Temporary EC2 ─────────────────────────
+      - name: Launch temporary EC2 for smoke testing
+        id: temp-ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "$TEMP_EC2_AMI" \
+            --instance-type "$TEMP_EC2_TYPE" \
+            --key-name "$TEMP_EC2_KEY" \
+            --security-group-ids "$TEMP_EC2_SG" \
+            --subnet-id "$TEMP_EC2_SUBNET" \
+            --iam-instance-profile Name="$TEMP_EC2_PROFILE" \
+            --user-data file://ec2/user-data.sh \
+            --tag-specifications \
+              'ResourceType=instance,Tags=[{Key=Name,Value=temp-nightly-verify},{Key=Purpose,Value=smoke-test}]' \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Launched temp EC2: $INSTANCE_ID"
+
+          # Wait until running
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          # Get public IP
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "Temp EC2 IP: $PUBLIC_IP"
+
+      # ── Step 2: Wait for EC2 to be ready ─────────────────────
+      - name: Wait for SSH on temp EC2
+        run: |
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no \
+                   -o ConnectTimeout=5 \
+                   -i /tmp/deploy_key \
+                   ec2-user@${{ steps.temp-ec2.outputs.public_ip }} \
+                   "echo ready" 2>/dev/null; then
+              echo "SSH is ready"
+              break
+            fi
+            echo "Waiting for SSH... attempt $i/30"
+            sleep 10
+          done
+
+      # ── Step 3: Deploy to temp EC2 ───────────────────────────
+      - name: Deploy app to temp EC2
+        run: |
+          REMOTE="ec2-user@${{ steps.temp-ec2.outputs.public_ip }}"
+          KEY="/tmp/deploy_key"
+
+          # Copy source code
+          scp -o StrictHostKeyChecking=no -i "$KEY" \
+            -r spa-app "$REMOTE":~/app
+
+          # Fetch DB credentials from Secrets Manager
+          DB_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id spa-app/db-credentials \
+            --query SecretString --output text)
+
+          DB_HOST=$(echo "$DB_SECRET" | jq -r '.host')
+          DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
+          DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
+
+          # Create .env on remote
+          ssh -o StrictHostKeyChecking=no -i "$KEY" "$REMOTE" << EOF
+            cd ~/app
+            cat > .env << ENVFILE
+          DB_HOST=$DB_HOST
+          DB_PORT=3306
+          DB_USER=$DB_USER
+          DB_PASSWORD=$DB_PASS
+          DB_NAME=spa_db
+          NODE_ENV=production
+          ENVFILE
+            docker compose up -d --build
+          EOF
+
+      # ── Step 4: Smoke Tests ──────────────────────────────────
+      - name: Run smoke tests
+        id: smoke
+        run: |
+          chmod +x scripts/smoke-test.sh
+          scripts/smoke-test.sh "${{ steps.temp-ec2.outputs.public_ip }}"
+
+      # ── Step 5: Build and Push to ECR ────────────────────────
+      - name: Login to Amazon ECR
+        if: steps.smoke.outcome == 'success'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push container images to ECR
+        if: steps.smoke.outcome == 'success'
+        run: |
+          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          TAG="$(date +%Y%m%d)-$(git -C spa-app rev-parse --short HEAD)"
+
+          # Build frontend
+          docker build -t "$ECR_REGISTRY/$ECR_FRONTEND:$TAG" spa-app/frontend/
+          docker build -t "$ECR_REGISTRY/$ECR_BACKEND:$TAG" spa-app/backend/
+
+          # Tag as latest
+          docker tag "$ECR_REGISTRY/$ECR_FRONTEND:$TAG" "$ECR_REGISTRY/$ECR_FRONTEND:latest"
+          docker tag "$ECR_REGISTRY/$ECR_BACKEND:$TAG" "$ECR_REGISTRY/$ECR_BACKEND:latest"
+
+          # Push all
+          docker push "$ECR_REGISTRY/$ECR_FRONTEND:$TAG"
+          docker push "$ECR_REGISTRY/$ECR_FRONTEND:latest"
+          docker push "$ECR_REGISTRY/$ECR_BACKEND:$TAG"
+          docker push "$ECR_REGISTRY/$ECR_BACKEND:latest"
+
+          echo "Pushed images with tag: $TAG"
+
+      # ── Step 6: Deploy to QA EC2 ─────────────────────────────
+      - name: Deploy to QA EC2
+        if: steps.smoke.outcome == 'success'
+        run: |
+          chmod +x scripts/deploy-to-qa.sh
+          scripts/deploy-to-qa.sh
+
+      # ── Step 7: Teardown Temp EC2 (always runs) ──────────────
+      - name: Terminate temporary EC2
+        if: always()
+        run: |
+          if [ -n "${{ steps.temp-ec2.outputs.instance_id }}" ]; then
+            aws ec2 terminate-instances \
+              --instance-ids "${{ steps.temp-ec2.outputs.instance_id }}"
+            echo "Terminated temp EC2: ${{ steps.temp-ec2.outputs.instance_id }}"
+          fi
+
+      # ── Cleanup ──────────────────────────────────────────────
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f /tmp/deploy_key
