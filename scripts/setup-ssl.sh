@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-DOMAIN="qa.yourdomain.com"
-EMAIL="admin@yourdomain.com"
+DOMAIN="qa.spaqa.fit"
+EMAIL="admin@spaqa.fit"
 
 echo "Setting up SSL for ${DOMAIN}"
 

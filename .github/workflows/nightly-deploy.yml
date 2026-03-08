@@ -14,7 +14,7 @@ env:
   AWS_ACCOUNT_ID: "164856787183"
   ECR_FRONTEND: spa-frontend
   ECR_BACKEND: spa-backend
-  QA_EC2_HOST: 52.32.55.43
+  QA_EC2_HOST: qa.spaqa.fit
   TEMP_EC2_AMI: ami-03caad32a158f72db   # Amazon Linux 2023 (us-west-2)
   TEMP_EC2_TYPE: t3.micro
   TEMP_EC2_SG: sg-080a28fcc898c33a0     # temp-ec2-sg
