@@ -10,15 +10,15 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: "123456789012"       # Replace with your account ID
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: "164856787183"
   ECR_FRONTEND: spa-frontend
   ECR_BACKEND: spa-backend
-  QA_EC2_HOST: qa.yourdomain.com
-  TEMP_EC2_AMI: ami-0abcdef1234567890  # Amazon Linux 2023 AMI
+  QA_EC2_HOST: 52.32.55.43
+  TEMP_EC2_AMI: ami-03caad32a158f72db   # Amazon Linux 2023 (us-west-2)
   TEMP_EC2_TYPE: t3.micro
-  TEMP_EC2_SG: sg-xxxxxxxxxxxxxxxxx
-  TEMP_EC2_SUBNET: subnet-xxxxxxxxxxxxxxxxx
+  TEMP_EC2_SG: sg-080a28fcc898c33a0     # temp-ec2-sg
+  TEMP_EC2_SUBNET: subnet-092e5a89e651771b6  # us-west-2a public
   TEMP_EC2_KEY: qa-deploy-key
   TEMP_EC2_PROFILE: ec2-qa-role
 
