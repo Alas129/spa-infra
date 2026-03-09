@@ -78,11 +78,12 @@ jobs:
           echo "Temp EC2 IP: $PUBLIC_IP"
 
       # ── Step 2: Wait for EC2 to be ready ─────────────────────
-      - name: Wait for SSH on temp EC2
+      - name: Wait for EC2 to be fully ready (SSH + Docker)
         run: |
           echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
 
+          echo "--- Waiting for SSH ---"
           for i in $(seq 1 30); do
             if ssh -o StrictHostKeyChecking=no \
                    -o ConnectTimeout=5 \
@@ -93,6 +94,19 @@ jobs:
               break
             fi
             echo "Waiting for SSH... attempt $i/30"
+            sleep 10
+          done
+
+          echo "--- Waiting for Docker ---"
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no \
+                   -i /tmp/deploy_key \
+                   ec2-user@${{ steps.temp-ec2.outputs.public_ip }} \
+                   "docker --version" 2>/dev/null; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Waiting for Docker install... attempt $i/30"
             sleep 10
           done
 
@@ -115,10 +129,8 @@ jobs:
           DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
           DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
 
-          # Create .env on remote
-          ssh -o StrictHostKeyChecking=no -i "$KEY" "$REMOTE" << EOF
-            cd ~/app
-            cat > .env << ENVFILE
+          # Create .env file locally then copy it
+          cat > /tmp/app.env << ENVFILE
           DB_HOST=$DB_HOST
           DB_PORT=3306
           DB_USER=$DB_USER
@@ -126,8 +138,16 @@ jobs:
           DB_NAME=spa_db
           NODE_ENV=production
           ENVFILE
-            docker compose up -d --build
-          EOF
+
+          # Remove leading whitespace from .env values
+          sed -i 's/^[[:space:]]*//' /tmp/app.env
+
+          scp -o StrictHostKeyChecking=no -i "$KEY" \
+            /tmp/app.env "$REMOTE":~/app/.env
+
+          # Build and start containers
+          ssh -o StrictHostKeyChecking=no -i "$KEY" "$REMOTE" \
+            "cd ~/app && docker compose up -d --build"
 
       # ── Step 4: Smoke Tests ──────────────────────────────────
       - name: Run smoke tests
