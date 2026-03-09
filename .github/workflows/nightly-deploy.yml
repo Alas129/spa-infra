@@ -34,7 +34,7 @@ jobs:
       - name: Checkout source repo
         uses: actions/checkout@v4
         with:
-          repository: YOUR_ORG/spa-app
+          repository: Alas129/spa-app
           path: spa-app
           token: ${{ secrets.SOURCE_REPO_PAT }}
 
