@@ -21,5 +21,7 @@ usermod -aG docker ec2-user
 # Install AWS CLI (already on Amazon Linux 2023, but ensure latest)
 yum install -y aws-cli
 
-# Install curl and jq for smoke tests
-yum install -y curl jq
+# Install curl, jq, and cronie (for certbot auto-renewal)
+yum install -y curl jq cronie
+systemctl enable crond
+systemctl start crond

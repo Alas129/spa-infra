@@ -624,69 +624,155 @@ mysql -h spa-db.cn86ysaecll7.us-west-2.rds.amazonaws.com \
 
 ---
 
-## Next Steps (Still TODO)
+## Step 12: Purchase Domain and Set Up Route 53 (COMPLETED)
 
-### 1. Purchase Domain and Set Up Route 53
+Domain `spaqa.fit` purchased from Name.com on 2026-03-08.
 
-1. Go to [Name.com](https://www.name.com) and purchase a domain (e.g. `yourdomain.com`)
-2. Create a hosted zone in Route 53:
-   ```bash
-   aws route53 create-hosted-zone \
-     --name yourdomain.com \
-     --caller-reference "spa-app-$(date +%s)"
-   ```
-3. Note the 4 NS records from the output
-4. Go to Name.com > My Domains > yourdomain.com > Nameservers
-5. Switch to **Custom** and enter the 4 Route 53 NS records
-6. Wait for DNS propagation (1-2 hours, up to 48 hours)
-7. Verify: `dig yourdomain.com NS`
-8. Create an A record pointing to the QA EC2 Elastic IP:
-   ```bash
-   # Get the hosted zone ID first
-   ZONE_ID=$(aws route53 list-hosted-zones-by-name \
-     --dns-name yourdomain.com \
-     --query 'HostedZones[0].Id' --output text)
-
-   aws route53 change-resource-record-sets \
-     --hosted-zone-id "$ZONE_ID" \
-     --change-batch '{
-       "Changes": [{
-         "Action": "CREATE",
-         "ResourceRecordSet": {
-           "Name": "qa.yourdomain.com",
-           "Type": "A",
-           "TTL": 300,
-           "ResourceRecords": [{"Value": "52.32.55.43"}]
-         }
-       }]
-     }'
-   ```
-
-### 2. Set Up SSL with Let's Encrypt
-
-After DNS propagates and `qa.yourdomain.com` resolves to `52.32.55.43`:
+### 12a. Create Route 53 Hosted Zone
 
 ```bash
-# SSH into QA EC2
+aws route53 create-hosted-zone \
+  --name spaqa.fit \
+  --caller-reference "spa-app-$(date +%s)"
+```
+
+Result: Hosted Zone ID `Z013706123DAJAMJ6K22H`
+
+### 12b. Get NS Records
+
+```bash
+aws route53 get-hosted-zone \
+  --id Z013706123DAJAMJ6K22H \
+  --query 'DelegationSet.NameServers' \
+  --output table
+```
+
+Result:
+
+```
+ns-775.awsdns-32.net
+ns-1226.awsdns-25.org
+ns-53.awsdns-06.com
+ns-2009.awsdns-59.co.uk
+```
+
+### 12c. Update Nameservers at Name.com
+
+1. Go to Name.com > My Domains > spaqa.fit > Manage Nameservers
+2. Delete the default Name.com nameservers
+3. Add the 4 AWS nameservers listed above
+4. Save
+
+### 12d. Create A Record
+
+```bash
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z013706123DAJAMJ6K22H \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "qa.spaqa.fit",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [{"Value": "52.32.55.43"}]
+      }
+    }]
+  }'
+```
+
+### 12e. Verify DNS
+
+```bash
+dig qa.spaqa.fit
+# Should return: 52.32.55.43
+```
+
+---
+
+## Step 13: Set Up SSL with Let's Encrypt (COMPLETED)
+
+### 13a. SSH into QA EC2
+
+```bash
 ssh -i ~/.ssh/qa-deploy-key.pem ec2-user@52.32.55.43
+```
 
-# Run the SSL setup script (copy it to the EC2 first)
-# Or run these commands directly:
-sudo yum install -y augeas-libs
+### 13b. Install Certbot
+
+```bash
+sudo yum install -y augeas-libs python3-pip
 sudo python3 -m venv /opt/certbot/
-sudo /opt/certbot/bin/pip install certbot certbot-nginx
+sudo /opt/certbot/bin/pip install --upgrade pip
+sudo /opt/certbot/bin/pip install certbot
+sudo ln -sf /opt/certbot/bin/certbot /usr/local/bin/certbot
+certbot --version
+```
 
-sudo /opt/certbot/bin/certbot certonly \
+### 13c. Obtain SSL Certificate
+
+```bash
+sudo certbot certonly \
   --standalone \
   --non-interactive \
   --agree-tos \
-  --email admin@yourdomain.com \
-  -d qa.yourdomain.com
+  --email admin@spaqa.fit \
+  -d qa.spaqa.fit
 ```
 
-Then update the frontend nginx config to use `nginx-ssl.conf` and restart.
+Result:
+- Certificate: `/etc/letsencrypt/live/qa.spaqa.fit/fullchain.pem`
+- Private key: `/etc/letsencrypt/live/qa.spaqa.fit/privkey.pem`
+- Expires: 2026-06-06
 
-### 3. Push Repos to GitHub
+### 13d. Set Up Auto-Renewal
+
+```bash
+# Install cronie (not included by default on Amazon Linux 2023)
+sudo yum install -y cronie
+sudo systemctl enable crond
+sudo systemctl start crond
+
+# Add renewal cron job (runs daily at 3 AM)
+(sudo crontab -l 2>/dev/null; echo '0 3 * * * /opt/certbot/bin/certbot renew --quiet --pre-hook "docker stop $(docker ps -q --filter name=frontend) 2>/dev/null || true" --post-hook "docker start $(docker ps -aq --filter name=frontend) 2>/dev/null || true"') | sudo crontab -
+
+# Verify
+sudo crontab -l
+```
+
+---
+
+## Updated Resource Summary
+
+| Resource                  | ID / Value                                                  |
+|---------------------------|-------------------------------------------------------------|
+| VPC (default)             | `vpc-06098a5359253f8f2`                                     |
+| Subnet (us-west-2a)      | `subnet-092e5a89e651771b6`                                  |
+| Subnet (us-west-2b)      | `subnet-03041301c1edaed84`                                  |
+| QA EC2 Security Group     | `sg-01011275e2cb425cd`                                      |
+| Temp EC2 Security Group   | `sg-080a28fcc898c33a0`                                      |
+| RDS Security Group        | `sg-098331f2614216186`                                      |
+| RDS Endpoint              | `spa-db.cn86ysaecll7.us-west-2.rds.amazonaws.com:3306`      |
+| ECR Frontend              | `164856787183.dkr.ecr.us-west-2.amazonaws.com/spa-frontend` |
+| ECR Backend               | `164856787183.dkr.ecr.us-west-2.amazonaws.com/spa-backend`  |
+| Key Pair                  | `qa-deploy-key` (saved to `~/.ssh/qa-deploy-key.pem`)       |
+| IAM Instance Profile      | `ec2-qa-role`                                                |
+| QA EC2 Instance           | `i-0a370b7e195c47c87`                                       |
+| QA EC2 Elastic IP         | `52.32.55.43`                                                |
+| GitHub OIDC Provider      | `arn:aws:iam::164856787183:oidc-provider/token.actions.githubusercontent.com` |
+| GitHub Actions IAM Role   | `github-actions-deploy`                                      |
+| Secrets Manager Secret    | `spa-app/db-credentials`                                     |
+| Amazon Linux 2023 AMI     | `ami-03caad32a158f72db`                                      |
+| Domain                    | `spaqa.fit` (purchased from Name.com)                        |
+| Route 53 Hosted Zone      | `Z013706123DAJAMJ6K22H`                                     |
+| DNS A Record              | `qa.spaqa.fit → 52.32.55.43`                                |
+| SSL Certificate           | `/etc/letsencrypt/live/qa.spaqa.fit/` (expires 2026-06-06)  |
+
+---
+
+## Next Steps (Still TODO)
+
+### 1. Push Repos to GitHub
 
 ```bash
 # Create two repos on GitHub: spa-app and spa-infra
@@ -708,7 +794,7 @@ git remote add origin git@github.com:YOUR_ORG/spa-infra.git
 git push -u origin main
 ```
 
-### 4. Configure GitHub Secrets
+### 2. Configure GitHub Secrets
 
 In the **spa-infra** repo, go to Settings > Secrets and variables > Actions,
 and add these secrets:
@@ -718,7 +804,7 @@ and add these secrets:
 | `EC2_SSH_PRIVATE_KEY`  | Contents of `~/.ssh/qa-deploy-key.pem`                   |
 | `SOURCE_REPO_PAT`     | A GitHub Personal Access Token with `repo` scope         |
 
-### 5. Update Workflow with Your GitHub Org
+### 3. Update Workflow with Your GitHub Org
 
 In `.github/workflows/nightly-deploy.yml`, replace `YOUR_ORG/spa-app` with
 your actual GitHub username/org and repo name.
@@ -755,7 +841,7 @@ aws iam update-assume-role-policy \
   --policy-document file:///tmp/updated-trust.json
 ```
 
-### 6. Test the Nightly Pipeline
+### 4. Test the Nightly Pipeline
 
 Go to the spa-infra repo on GitHub > Actions > "Nightly QA Deploy" >
 "Run workflow" to trigger it manually and verify everything works end-to-end.
@@ -810,4 +896,20 @@ aws iam delete-role-policy --role-name github-actions-deploy --policy-name githu
 aws iam delete-role --role-name github-actions-deploy
 aws iam delete-open-id-connect-provider \
   --open-id-connect-provider-arn arn:aws:iam::164856787183:oidc-provider/token.actions.githubusercontent.com
+
+# Delete Route 53 A record and hosted zone
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z013706123DAJAMJ6K22H \
+  --change-batch '{
+    "Changes": [{
+      "Action": "DELETE",
+      "ResourceRecordSet": {
+        "Name": "qa.spaqa.fit",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [{"Value": "52.32.55.43"}]
+      }
+    }]
+  }'
+aws route53 delete-hosted-zone --id Z013706123DAJAMJ6K22H
 ```
