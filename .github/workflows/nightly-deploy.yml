@@ -97,16 +97,16 @@ jobs:
             sleep 10
           done
 
-          echo "--- Waiting for Docker ---"
+          echo "--- Waiting for Docker + Compose ---"
           for i in $(seq 1 30); do
             if ssh -o StrictHostKeyChecking=no \
                    -i /tmp/deploy_key \
                    ec2-user@${{ steps.temp-ec2.outputs.public_ip }} \
-                   "docker --version" 2>/dev/null; then
-              echo "Docker is ready"
+                   "docker compose version" 2>/dev/null; then
+              echo "Docker and Compose are ready"
               break
             fi
-            echo "Waiting for Docker install... attempt $i/30"
+            echo "Waiting for Docker + Compose install... attempt $i/30"
             sleep 10
           done
 
@@ -115,39 +115,28 @@ jobs:
         run: |
           REMOTE="ec2-user@${{ steps.temp-ec2.outputs.public_ip }}"
           KEY="/tmp/deploy_key"
-
-          # Copy source code
-          scp -o StrictHostKeyChecking=no -i "$KEY" \
-            -r spa-app "$REMOTE":~/app
+          SSH="ssh -o StrictHostKeyChecking=no -i $KEY $REMOTE"
+          SCP="scp -o StrictHostKeyChecking=no -i $KEY"
 
           # Fetch DB credentials from Secrets Manager
           DB_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id spa-app/db-credentials \
             --query SecretString --output text)
 
-          DB_HOST=$(echo "$DB_SECRET" | jq -r '.host')
-          DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
-          DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
+          # Build .env
+          echo "DB_HOST=$(echo $DB_SECRET | jq -r '.host')"    > /tmp/app.env
+          echo "DB_PORT=3306"                                  >> /tmp/app.env
+          echo "DB_USER=$(echo $DB_SECRET | jq -r '.username')" >> /tmp/app.env
+          echo "DB_PASSWORD=$(echo $DB_SECRET | jq -r '.password')" >> /tmp/app.env
+          echo "DB_NAME=spa_db"                                >> /tmp/app.env
+          echo "NODE_ENV=production"                           >> /tmp/app.env
 
-          # Create .env file locally then copy it
-          cat > /tmp/app.env << ENVFILE
-          DB_HOST=$DB_HOST
-          DB_PORT=3306
-          DB_USER=$DB_USER
-          DB_PASSWORD=$DB_PASS
-          DB_NAME=spa_db
-          NODE_ENV=production
-          ENVFILE
-
-          # Remove leading whitespace from .env values
-          sed -i 's/^[[:space:]]*//' /tmp/app.env
-
-          scp -o StrictHostKeyChecking=no -i "$KEY" \
-            /tmp/app.env "$REMOTE":~/app/.env
+          # Copy source code and .env to temp EC2
+          $SCP -r spa-app "$REMOTE":~/app
+          $SCP /tmp/app.env "$REMOTE":~/app/.env
 
           # Build and start containers
-          ssh -o StrictHostKeyChecking=no -i "$KEY" "$REMOTE" \
-            "cd ~/app && docker compose up -d --build"
+          $SSH "cd ~/app && docker compose up -d --build"
 
       # ── Step 4: Smoke Tests ──────────────────────────────────
       - name: Run smoke tests

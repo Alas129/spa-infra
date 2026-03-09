@@ -9,11 +9,17 @@ yum install -y docker
 systemctl enable docker
 systemctl start docker
 
-# Install Docker Compose
+# Install Docker Compose as CLI plugin
 COMPOSE_VERSION="v2.24.0"
+mkdir -p /usr/local/lib/docker/cli-plugins
 curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-  -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Also make it available for ec2-user
+mkdir -p /home/ec2-user/.docker/cli-plugins
+cp /usr/local/lib/docker/cli-plugins/docker-compose /home/ec2-user/.docker/cli-plugins/docker-compose
+chown -R ec2-user:ec2-user /home/ec2-user/.docker
 
 # Add ec2-user to docker group
 usermod -aG docker ec2-user
