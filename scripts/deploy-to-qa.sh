@@ -4,6 +4,8 @@ set -euo pipefail
 QA_HOST="${QA_EC2_HOST}"
 KEY="/tmp/deploy_key"
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+SSH="ssh -o StrictHostKeyChecking=no -i $KEY ec2-user@${QA_HOST}"
+SCP="scp -o StrictHostKeyChecking=no -i $KEY"
 
 echo "Deploying to QA EC2: ${QA_HOST}"
 
@@ -12,42 +14,30 @@ DB_SECRET=$(aws secretsmanager get-secret-value \
   --secret-id spa-app/db-credentials \
   --query SecretString --output text)
 
-DB_HOST=$(echo "$DB_SECRET" | jq -r '.host')
-DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
-DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
+# Build .env locally
+echo "ECR_REGISTRY=${ECR_REGISTRY}"                          > /tmp/qa.env
+echo "RDS_ENDPOINT=$(echo $DB_SECRET | jq -r '.host')"      >> /tmp/qa.env
+echo "DB_USER=$(echo $DB_SECRET | jq -r '.username')"       >> /tmp/qa.env
+echo "DB_PASSWORD=$(echo $DB_SECRET | jq -r '.password')"   >> /tmp/qa.env
 
-# Copy QA compose file
-scp -o StrictHostKeyChecking=no -i "$KEY" \
-  ec2/docker-compose.qa.yml "ec2-user@${QA_HOST}":~/qa-deploy/docker-compose.yml
+# Create deploy directory and copy files
+$SSH "mkdir -p ~/qa-deploy"
+$SCP ec2/docker-compose.qa.yml "ec2-user@${QA_HOST}":~/qa-deploy/docker-compose.yml
+$SCP /tmp/qa.env "ec2-user@${QA_HOST}":~/qa-deploy/.env
 
 # Deploy on QA EC2
-ssh -o StrictHostKeyChecking=no -i "$KEY" "ec2-user@${QA_HOST}" << EOF
-  set -euo pipefail
-  cd ~/qa-deploy
+$SSH "cd ~/qa-deploy \
+  && aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY} \
+  && docker compose pull \
+  && docker compose down \
+  && docker compose up -d"
 
-  # Login to ECR
-  aws ecr get-login-password --region ${AWS_REGION} | \
-    docker login --username AWS --password-stdin ${ECR_REGISTRY}
+# Wait and verify
+echo "Waiting 15s for containers to start..."
+sleep 15
+$SSH "curl -sf http://localhost/api/health" || {
+  echo "Health check failed after deploy!"
+  exit 1
+}
 
-  # Create .env for compose
-  cat > .env << ENVFILE
-ECR_REGISTRY=${ECR_REGISTRY}
-RDS_ENDPOINT=${DB_HOST}
-DB_USER=${DB_USER}
-DB_PASSWORD=${DB_PASS}
-ENVFILE
-
-  # Pull latest images and restart
-  docker compose pull
-  docker compose down
-  docker compose up -d
-
-  # Wait and verify
-  sleep 15
-  curl -sf http://localhost/api/health || {
-    echo "Health check failed after deploy!"
-    exit 1
-  }
-
-  echo "QA deployment successful!"
-EOF
+echo "QA deployment successful!"
