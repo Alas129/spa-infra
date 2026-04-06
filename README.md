@@ -4,7 +4,7 @@ Infrastructure and CI/CD for deploying the [spa-app](https://github.com/Alas129/
 
 ## What It Does
 
-A **nightly GitHub Actions workflow** (`nightly-deploy.yml`) that runs at 3:00 AM UTC and:
+A **manually triggered GitHub Actions workflow** (`nightly-deploy.yml`) that:
 
 1. Launches a **temporary EC2** instance
 2. Deploys the app and runs **smoke tests**
@@ -15,7 +15,7 @@ A **nightly GitHub Actions workflow** (`nightly-deploy.yml`) that runs at 3:00 A
 ## Structure
 
 ```
-.github/workflows/nightly-deploy.yml   # Nightly build & deploy workflow
+.github/workflows/nightly-deploy.yml   # Manual build & deploy workflow
 ec2/
   docker-compose.qa.yml                # Compose file for QA deployment (ECR images)
   nginx-ssl.conf                       # Nginx config with SSL
